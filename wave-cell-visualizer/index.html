@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wave / Cell Visualizer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Advanced Wave / Cell Expansion–Collapse Visualizer</h1>
+      <p>
+        Rotating cubic cell lattice, neighbor-coupled wave propagation, residual memory,
+        pseudo-tesseract projection, diagnostic waveform strip, PNG export, WebM export,
+        GIF export, mouse-driven camera control, saved presets, thumbnails, tags, and preset import/export.
+      </p>
+      <div class="modeRow">
+        <span class="modeBadge" id="modeBadge">BALANCED</span>
+        <span class="modeHint" id="modeHint">equal expansion and collapse emphasis</span>
+      </div>
+    </header>
+
+    <div class="controls">
+      <label>
+        Preset
+        <select id="presetSelect">
+          <option value="custom">Custom</option>
+          <option value="fun">Fun speed</option>
+          <option value="stress">Stress speed</option>
+          <option value="calm">Calm memory</option>
+          <option value="sharp">Sharp collapse</option>
+        </select>
+      </label>
+
+      <label>
+        Saved
+        <select id="savedPresetSelect">
+          <option value="">Saved presets</option>
+        </select>
+      </label>
+
+      <label>
+        Name
+        <input id="presetNameInput" type="text" placeholder="my mode" maxlength="40" />
+      </label>
+
+      <label>
+        Tags
+        <input id="presetTagsInput" type="text" placeholder="fun, stress, memory" maxlength="120" />
+      </label>
+
+      <button id="savePresetBtn">Save Preset</button>
+      <button id="deletePresetBtn">Delete Saved</button>
+      <button id="exportPresetsBtn">Export Presets</button>
+      <button id="importPresetsBtn">Import Presets</button>
+      <input id="importPresetsInput" type="file" accept="application/json,.json" hidden />
+
+      <label>
+        Cells
+        <input id="gridSize" type="range" min="8" max="20" step="1" value="12" />
+        <span class="readout" id="gridSizeVal">12</span>
+      </label>
+
+      <label>
+        Speed
+        <input id="speed" type="range" min="0.2" max="2.4" step="0.1" value="1.0" />
+        <span class="readout" id="speedVal">1.0</span>
+      </label>
+
+      <label>
+        Memory
+        <input id="memory" type="range" min="0.00" max="0.98" step="0.01" value="0.78" />
+        <span class="readout" id="memoryVal">0.78</span>
+      </label>
+
+      <label>
+        Coupling
+        <input id="coupling" type="range" min="0.00" max="0.45" step="0.01" value="0.16" />
+        <span class="readout" id="couplingVal">0.16</span>
+      </label>
+
+      <label>
+        Rotation
+        <input id="rotation" type="range" min="0.0" max="1.8" step="0.1" value="0.7" />
+        <span class="readout" id="rotationVal">0.7</span>
+      </label>
+
+      <label>
+        Contrast
+        <input id="contrast" type="range" min="0.2" max="2.2" step="0.1" value="1.2" />
+        <span class="readout" id="contrastVal">1.2</span>
+      </label>
+
+      <label>
+        Expand weight
+        <input id="expandWeight" type="range" min="0.00" max="2.00" step="0.01" value="1.00" />
+        <span class="readout" id="expandWeightVal">1.00</span>
+      </label>
+
+      <label>
+        Collapse weight
+        <input id="collapseWeight" type="range" min="0.00" max="2.00" step="0.01" value="1.00" />
+        <span class="readout" id="collapseWeightVal">1.00</span>
+      </label>
+
+      <label>
+        Projection
+        <select id="projection">
+          <option value="iso">Isometric cube</option>
+          <option value="front">Front face</option>
+          <option value="tesseract">Pseudo-tesseract</option>
+        </select>
+      </label>
+
+      <button id="toggleRun">Pause</button>
+      <button id="resetBtn">Reset</button>
+      <button id="snapshotBtn">Save PNG</button>
+      <button id="recordBtn">Start WebM</button>
+      <button id="gifBtn">Start GIF</button>
+      <span class="status" id="statusText">Idle</span>
+    </div>
+
+    <div class="presetGalleryWrap">
+      <div class="presetGalleryTop">
+        <div class="presetGalleryTitle">Saved preset thumbnails</div>
+        <div class="presetTagInputHint">Filter by tag or name, then click a card to load it.</div>
+      </div>
+
+      <div class="presetFilterBar">
+        <input id="galleryFilterInput" type="text" placeholder="filter presets by tag or name" />
+        <button id="clearGalleryFilterBtn">Clear Filter</button>
+      </div>
+
+      <div class="presetTagChips" id="presetTagChips"></div>
+      <div class="presetGallery" id="presetGallery"></div>
+    </div>
+
+    <div class="main">
+      <section class="panel">
+        <div class="panelLabel">Expansion / diffuse</div>
+        <canvas id="canvasExpand"></canvas>
+      </section>
+
+      <section class="panel">
+        <div class="panelLabel">Reflect / collapse</div>
+        <canvas id="canvasCollapse"></canvas>
+      </section>
+    </div>
+
+    <div class="subPanel">
+      <div class="panelLabel waveLabel">Diagnostic waveform strip</div>
+      <canvas id="canvasWave"></canvas>
+    </div>
+
+    <footer>
+      Upstream waveform inspiration is credited in <span class="mono">NOTICE.txt</span>.
+      GIF export uses <span class="mono">gif.js</span> from a CDN in this build.
+      For a fully offline repo, download the library files locally and update the script paths in
+      <span class="mono">index.html</span> and <span class="mono">app.js</span>.
+    </footer>
+  </div>
+
+  <script src="vendor/gif.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

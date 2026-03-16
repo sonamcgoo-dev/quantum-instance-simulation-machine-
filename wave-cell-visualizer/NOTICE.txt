@@ -1,0 +1,17 @@
+This project includes waveform visualization ideas inspired by:
+
+waveform-visualizer
+https://github.com/chrisweb/waveform-visualizer
+
+Author: Chris Weber
+
+Used under the MIT License.
+
+Additional systems in this repository, including cube-cell field rendering,
+residual wave memory, pseudo-tesseract projection, waveform diagnostics,
+preset management, thumbnails, tags, filtering, and export tooling, are
+original additions unless otherwise noted.
+
+
+This offline bundle also includes a local copy of gif.js.optimized 1.0.1 under the MIT License.
+See vendor/LICENSE-gif.js.optimized.txt for the bundled library notice.
