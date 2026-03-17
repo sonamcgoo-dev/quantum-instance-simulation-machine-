@@ -1,50 +1,33 @@
-## Launch checklist
+[RELEASE_NOTES_v0.1.0.md](https://github.com/user-attachments/files/26047131/RELEASE_NOTES_v0.1.0.md)
+## v0.1.0 – Initial public visualization build
 
-- [ ] README replaced with polished version
-- [ ] `assets/demo.gif` or `assets/screenshot.png` committed
-- [ ] repo description added
-- [ ] topics added
-- [ ] `NOTICE.txt` committed
-- [ ] `LICENSE-UPSTREAM.txt` committed
-- [ ] `vendor/LICENSE-gif.js.optimized.txt` committed
-- [ ] GitHub Pages enabled
-- [ ] `v0.1.0` release created
-- [ ] release notes pasted
-- [ ] optional ZIP attached to release assets
+First public release of the Wave Cell Visualizer.
 
-## GitHub Pages checklist
+### Included
+- rotating cube-field visualization
+- side-by-side expansion and collapse rendering
+- pseudo-tesseract projection mode
+- residual memory dynamics
+- waveform diagnostics panel
+- PNG snapshot export
+- WebM recording
+- GIF export
+- mouse/touch camera drag
+- built-in presets
+- saved preset library with localStorage
+- thumbnail gallery for saved presets
+- preset tags and filtering
+- preset import/export JSON
+- offline bundled GIF library
 
-- [ ] Open the repository on GitHub
-- [ ] Go to **Settings**
-- [ ] Open **Pages** in the sidebar
-- [ ] Under **Build and deployment**, set **Source** to **Deploy from a branch**
-- [ ] Select branch **main**
-- [ ] Select folder **/(root)**
-- [ ] Save
-- [ ] Wait for the Pages deployment to finish
-- [ ] Open the generated Pages URL
-- [ ] Confirm `index.html` loads correctly
-- [ ] Test preset save/load
-- [ ] Test PNG/WebM/GIF export
-- [ ] Confirm offline GIF bundle is loading locally from `vendor/`
+### Notes
+- runs as a static browser app with no build step
+- designed for GitHub Pages deployment
+- includes upstream attribution and bundled license files
+- framed as a speculative interactive visualization, not a validated scientific model
 
-## Repo description
-
-Interactive wave/cell visualization with cube-field dynamics, pseudo-tesseract projection, preset thumbnails, and PNG/WebM/GIF export.
-
-## Topics
-
-- canvas
-- visualization
-- wave-simulation
-- gif-export
-- webm
-- html5
-- javascript
-- creative-coding
-- tesseract
-- localstorage
-
-## Suggested commit message
-
-Prepare public launch: README, Pages, release notes, topics, and offline bundle
+### Known limitations
+- conceptual visualization, not a validated physical model
+- GIF export can be slower on weaker hardware
+- very large saved preset libraries may increase localStorage usage
+- source cleanup and modularization are still in progress
