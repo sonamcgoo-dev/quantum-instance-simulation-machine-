@@ -30,9 +30,12 @@
    - preset thumbnail gallery
    - preset export/import
    - preset tags and tag filtering
+
+   This version keeps neighbor-driven sheet / field coupling as the core
+   behavior, but reduces avoidable redraw and allocation churn.
    ===================================================================== */
 
-const STORAGE_KEY = 'waveCellVisualizer.savedPresets.v4';
+const STORAGE_KEY = 'waveCellVisualizer.savedPresets.v5';
 
 const canvasExpand = document.getElementById('canvasExpand');
 const canvasCollapse = document.getElementById('canvasCollapse');
@@ -188,10 +191,36 @@ const state = {
   savedPresets: {},
   activeSavedPresetName: '',
   galleryFilterTag: '',
-  galleryFilterText: ''
+  galleryFilterText: '',
+
+  renderDirty: true,
+  resizeRafId: 0,
+  resetDebounceId: 0,
+
+  cache: {
+    coordsN: 0,
+    total: 0,
+    nx: null,
+    ny: null,
+    nz: null,
+    polar: null,
+    rx: null,
+    ry: null,
+    rz: null,
+    order: [],
+    frameKey: '',
+    gradientExpand: null,
+    gradientCollapse: null,
+    gradientWave: null,
+    gradientExpandSizeKey: '',
+    gradientCollapseSizeKey: '',
+    gradientWaveSizeKey: ''
+  }
 };
 
 function setStatus(text) {
+  if (!ui.statusText) return;
+  if (ui.statusText.textContent === text) return;
   ui.statusText.textContent = text;
 }
 
@@ -230,6 +259,28 @@ function formatTagsForInput(tags) {
   return Array.isArray(tags) ? tags.join(', ') : '';
 }
 
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function safeNumber(value, fallback, lo = -Infinity, hi = Infinity) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return clamp(n, lo, hi);
+}
+
+function getRecordingWebmActive() {
+  return Boolean(state.recorder && state.recorder.state === 'recording');
+}
+
+function markRenderDirty() {
+  state.renderDirty = true;
+}
+
 function resizeCanvas(canvas) {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const rect = canvas.getBoundingClientRect();
@@ -237,6 +288,17 @@ function resizeCanvas(canvas) {
   canvas.height = Math.max(2, Math.floor(rect.height * dpr));
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function invalidateSizeCaches() {
+  state.cache.gradientExpand = null;
+  state.cache.gradientCollapse = null;
+  state.cache.gradientWave = null;
+  state.cache.gradientExpandSizeKey = '';
+  state.cache.gradientCollapseSizeKey = '';
+  state.cache.gradientWaveSizeKey = '';
+  state.cache.frameKey = '';
+  markRenderDirty();
 }
 
 function createField(n) {
@@ -247,12 +309,42 @@ function idx(x, y, z, n) {
   return x + y * n + z * n * n;
 }
 
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
+function buildCoordinateCache() {
+  if (state.cache.coordsN === state.n && state.cache.nx) return;
 
-function lerp(a, b, t) {
-  return a + (b - a) * t;
+  const n = state.n;
+  const total = n * n * n;
+  const denom = n > 1 ? (n - 1) : 1;
+
+  state.cache.coordsN = n;
+  state.cache.total = total;
+  state.cache.nx = new Float32Array(total);
+  state.cache.ny = new Float32Array(total);
+  state.cache.nz = new Float32Array(total);
+  state.cache.polar = new Float32Array(total);
+  state.cache.rx = new Float32Array(total);
+  state.cache.ry = new Float32Array(total);
+  state.cache.rz = new Float32Array(total);
+  state.cache.order = new Array(total);
+
+  let i = 0;
+  for (let z = 0; z < n; z++) {
+    const nz = z / denom - 0.5;
+    for (let y = 0; y < n; y++) {
+      const ny = y / denom - 0.5;
+      for (let x = 0; x < n; x++) {
+        const nx = x / denom - 0.5;
+        state.cache.nx[i] = nx;
+        state.cache.ny[i] = ny;
+        state.cache.nz[i] = nz;
+        state.cache.polar[i] = Math.max(Math.abs(nx), Math.abs(ny), Math.abs(nz));
+        state.cache.order[i] = i;
+        i++;
+      }
+    }
+  }
+
+  state.cache.frameKey = '';
 }
 
 function getSerializableState() {
@@ -296,23 +388,27 @@ function normalizeSavedPresetRecord(record) {
 function applySerializableState(config) {
   if (!config) return;
 
-  state.n = Number(config.n);
-  state.speed = Number(config.speed);
-  state.memory = Number(config.memory);
-  state.coupling = Number(config.coupling);
-  state.rotation = Number(config.rotation);
-  state.contrast = Number(config.contrast);
-  state.expandWeight = Number(config.expandWeight ?? 1.0);
-  state.collapseWeight = Number(config.collapseWeight ?? 1.0);
-  state.projection = String(config.projection);
+  state.n = Math.round(safeNumber(config.n, state.n, 4, 24));
+  state.speed = safeNumber(config.speed, state.speed, 0.1, 4.0);
+  state.memory = safeNumber(config.memory, state.memory, 0.0, 0.99);
+  state.coupling = safeNumber(config.coupling, state.coupling, 0.0, 1.0);
+  state.rotation = safeNumber(config.rotation, state.rotation, 0.0, 3.0);
+  state.contrast = safeNumber(config.contrast, state.contrast, 0.2, 3.0);
+  state.expandWeight = safeNumber(config.expandWeight ?? 1.0, state.expandWeight, 0.1, 3.0);
+  state.collapseWeight = safeNumber(config.collapseWeight ?? 1.0, state.collapseWeight, 0.1, 3.0);
+
+  const projection = String(config.projection || state.projection);
+  state.projection = ['iso', 'front', 'tesseract'].includes(projection) ? projection : 'iso';
 
   const camera = config.camera || {};
-  state.camera.basePitch = Number(camera.basePitch ?? 0.55);
-  state.camera.baseYaw = Number(camera.baseYaw ?? 0.8);
+  state.camera.basePitch = safeNumber(camera.basePitch, 0.55, -2.0, 2.0);
+  state.camera.baseYaw = safeNumber(camera.baseYaw, 0.8, -6.0, 6.0);
   state.camera.dragPitch = 0;
   state.camera.dragYaw = 0;
 
   syncControlsFromState();
+  buildCoordinateCache();
+  markRenderDirty();
 }
 
 function savePresetsToStorage() {
@@ -320,6 +416,24 @@ function savePresetsToStorage() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.savedPresets));
   } catch (err) {
     console.error(err);
+
+    try {
+      const stripped = {};
+      for (const [name, record] of Object.entries(state.savedPresets)) {
+        stripped[name] = {
+          ...record,
+          thumbnail: ''
+        };
+      }
+      state.savedPresets = stripped;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.savedPresets));
+      refreshSavedPresetDropdown(state.activeSavedPresetName);
+      setStatus('Preset thumbnails stripped to fit storage');
+      return;
+    } catch (fallbackErr) {
+      console.error(fallbackErr);
+    }
+
     setStatus('Could not save presets');
   }
 }
@@ -341,21 +455,48 @@ function loadPresetsFromStorage() {
   }
 }
 
+function ensureCompositeCanvas() {
+  if (!state.compositeCanvas) {
+    state.compositeCanvas = document.createElement('canvas');
+    state.compositeCtx = state.compositeCanvas.getContext('2d');
+  }
+}
+
+function drawCompositeForExport() {
+  ensureCompositeCanvas();
+
+  const w = Math.max(canvasExpand.width, canvasCollapse.width);
+  const hTop = Math.max(canvasExpand.height, canvasCollapse.height);
+  const hWave = canvasWave.height;
+
+  state.compositeCanvas.width = w * 2;
+  state.compositeCanvas.height = hTop + hWave;
+
+  const c = state.compositeCtx;
+  c.clearRect(0, 0, state.compositeCanvas.width, state.compositeCanvas.height);
+  c.fillStyle = '#070707';
+  c.fillRect(0, 0, state.compositeCanvas.width, state.compositeCanvas.height);
+
+  c.drawImage(canvasExpand, 0, 0);
+  c.drawImage(canvasCollapse, w, 0);
+  c.drawImage(canvasWave, 0, hTop, w * 2, hWave);
+}
+
 function capturePresetThumbnail() {
   drawCompositeForExport();
 
   const src = state.compositeCanvas;
   const thumb = document.createElement('canvas');
   const ratio = src.height / src.width;
-  thumb.width = 320;
-  thumb.height = Math.max(180, Math.round(320 * ratio));
+  thumb.width = 240;
+  thumb.height = Math.max(150, Math.round(240 * ratio));
 
   const tctx = thumb.getContext('2d');
   tctx.fillStyle = '#070707';
   tctx.fillRect(0, 0, thumb.width, thumb.height);
   tctx.drawImage(src, 0, 0, thumb.width, thumb.height);
 
-  return thumb.toDataURL('image/jpeg', 0.82);
+  return thumb.toDataURL('image/jpeg', 0.72);
 }
 
 function buildPresetRecord() {
@@ -540,10 +681,8 @@ function updateReadouts() {
   ui.expandWeightVal.textContent = state.expandWeight.toFixed(2);
   ui.collapseWeightVal.textContent = state.collapseWeight.toFixed(2);
   ui.toggleRun.textContent = state.running ? 'Pause' : 'Play';
-  ui.recordBtn.textContent =
-    state.recorder && state.recorder.state === 'recording' ? 'Stop WebM' : 'Start WebM';
-  ui.gifBtn.textContent =
-    state.gifRecorder.active ? 'Stop GIF' : 'Start GIF';
+  ui.recordBtn.textContent = getRecordingWebmActive() ? 'Stop WebM' : 'Start WebM';
+  ui.gifBtn.textContent = state.gifRecorder.active ? 'Stop GIF' : 'Start GIF';
 
   updateModeBadge();
 }
@@ -842,7 +981,7 @@ function duplicateSavedPreset(name) {
     return;
   }
 
-  let baseName = `${name} copy`;
+  const baseName = `${name} copy`;
   let newName = baseName;
   let i = 2;
 
@@ -998,23 +1137,33 @@ function sourceTargets(nx, ny, nz, t) {
   return { expandTarget, collapseTarget };
 }
 
-function neighborAverage(field, x, y, z, n) {
+function neighborAverage(field, i, x, y, z, n, n2) {
   let sum = 0;
   let count = 0;
-  const neighbors = [
-    [ 1, 0, 0], [-1, 0, 0],
-    [ 0, 1, 0], [ 0,-1, 0],
-    [ 0, 0, 1], [ 0, 0,-1]
-  ];
 
-  for (const [dx, dy, dz] of neighbors) {
-    const xx = x + dx;
-    const yy = y + dy;
-    const zz = z + dz;
-    if (xx >= 0 && yy >= 0 && zz >= 0 && xx < n && yy < n && zz < n) {
-      sum += field[idx(xx, yy, zz, n)];
-      count++;
-    }
+  if (x > 0) {
+    sum += field[i - 1];
+    count++;
+  }
+  if (x + 1 < n) {
+    sum += field[i + 1];
+    count++;
+  }
+  if (y > 0) {
+    sum += field[i - n];
+    count++;
+  }
+  if (y + 1 < n) {
+    sum += field[i + n];
+    count++;
+  }
+  if (z > 0) {
+    sum += field[i - n2];
+    count++;
+  }
+  if (z + 1 < n) {
+    sum += field[i + n2];
+    count++;
   }
 
   return count ? (sum / count) : 0;
@@ -1022,25 +1171,25 @@ function neighborAverage(field, x, y, z, n) {
 
 function stepFields() {
   const n = state.n;
+  const n2 = n * n;
   const mem = state.memory;
   const coup = state.coupling;
   const t = state.t;
+  const nxArr = state.cache.nx;
+  const nyArr = state.cache.ny;
+  const nzArr = state.cache.nz;
 
   let sumExpand = 0;
   let sumCollapse = 0;
   let sumResidual = 0;
+  let i = 0;
 
   for (let z = 0; z < n; z++) {
     for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        const i = idx(x, y, z, n);
-        const nx = x / (n - 1) - 0.5;
-        const ny = y / (n - 1) - 0.5;
-        const nz = z / (n - 1) - 0.5;
-
-        const { expandTarget, collapseTarget } = sourceTargets(nx, ny, nz, t);
-        const expNeighbors = neighborAverage(state.expandField, x, y, z, n);
-        const colNeighbors = neighborAverage(state.collapseField, x, y, z, n);
+      for (let x = 0; x < n; x++, i++) {
+        const { expandTarget, collapseTarget } = sourceTargets(nxArr[i], nyArr[i], nzArr[i], t);
+        const expNeighbors = neighborAverage(state.expandField, i, x, y, z, n, n2);
+        const colNeighbors = neighborAverage(state.collapseField, i, x, y, z, n, n2);
 
         const expDriven = lerp(expandTarget, expNeighbors, coup);
         const colDriven = lerp(collapseTarget, colNeighbors, coup);
@@ -1077,14 +1226,19 @@ function stepFields() {
   if (state.historyExpand.length > maxLen) state.historyExpand.shift();
   if (state.historyCollapse.length > maxLen) state.historyCollapse.shift();
   if (state.historyResidual.length > maxLen) state.historyResidual.shift();
+
+  state.cache.frameKey = '';
+  markRenderDirty();
 }
 
 function rotate3D(x, y, z, ax, ay) {
-  const cosY = Math.cos(ay), sinY = Math.sin(ay);
+  const cosY = Math.cos(ay);
+  const sinY = Math.sin(ay);
   const x1 = x * cosY - z * sinY;
   const z1 = x * sinY + z * cosY;
 
-  const cosX = Math.cos(ax), sinX = Math.sin(ax);
+  const cosX = Math.cos(ax);
+  const sinX = Math.sin(ax);
   const y2 = y * cosX - z1 * sinX;
   const z2 = y * sinX + z1 * cosX;
 
@@ -1101,44 +1255,103 @@ function getCameraAngles(time) {
   };
 }
 
-function projectPoint(nx, ny, nz, w, h, mode, time) {
-  if (mode === 'front') {
-    return {
-      x: w * 0.5 + nx * (Math.min(w, h) * 0.64),
-      y: h * 0.5 + ny * (Math.min(w, h) * 0.64),
-      depth: nz
-    };
+function getFrameProjectionData() {
+  buildCoordinateCache();
+
+  const cam = getCameraAngles(state.t);
+  const key = [state.projection, state.t.toFixed(4), cam.pitch.toFixed(4), cam.yaw.toFixed(4), state.n].join('|');
+  if (state.cache.frameKey === key) {
+    return { pitch: cam.pitch, yaw: cam.yaw };
   }
 
-  const cam = getCameraAngles(time);
-  const rot = rotate3D(nx, ny, nz, cam.pitch, cam.yaw);
+  const total = state.cache.total;
+  const rx = state.cache.rx;
+  const ry = state.cache.ry;
+  const rz = state.cache.rz;
+  const nx = state.cache.nx;
+  const ny = state.cache.ny;
+  const nz = state.cache.nz;
+  const order = state.cache.order;
+
+  if (state.projection === 'front') {
+    for (let i = 0; i < total; i++) {
+      rx[i] = nx[i];
+      ry[i] = ny[i];
+      rz[i] = nz[i];
+      order[i] = i;
+    }
+  } else {
+    for (let i = 0; i < total; i++) {
+      const rot = rotate3D(nx[i], ny[i], nz[i], cam.pitch, cam.yaw);
+      rx[i] = rot.x;
+      ry[i] = rot.y;
+      rz[i] = rot.z;
+      order[i] = i;
+    }
+  }
+
+  order.sort((a, b) => rz[a] - rz[b]);
+  state.cache.frameKey = key;
+  return { pitch: cam.pitch, yaw: cam.yaw };
+}
+
+function projectCachedPoint(rotX, rotY, rotZ, w, h, mode) {
+  if (mode === 'front') {
+    return {
+      x: w * 0.5 + rotX * (Math.min(w, h) * 0.64),
+      y: h * 0.5 + rotY * (Math.min(w, h) * 0.64)
+    };
+  }
 
   if (mode === 'tesseract') {
     const outerScale = Math.min(w, h) * 0.32;
     const innerScale = outerScale * 0.62;
-    const offsetX = rot.z * outerScale * 0.40;
-    const offsetY = rot.z * outerScale * 0.34;
+    const offsetX = rotZ * outerScale * 0.40;
+    const offsetY = rotZ * outerScale * 0.34;
 
-    const outerX = w * 0.5 + rot.x * outerScale;
-    const outerY = h * 0.52 + rot.y * outerScale;
+    const outerX = w * 0.5 + rotX * outerScale;
+    const outerY = h * 0.52 + rotY * outerScale;
 
-    const innerX = w * 0.5 + rot.x * innerScale + offsetX;
-    const innerY = h * 0.52 + rot.y * innerScale + offsetY;
+    const innerX = w * 0.5 + rotX * innerScale + offsetX;
+    const innerY = h * 0.52 + rotY * innerScale + offsetY;
 
     return {
-      x: lerp(outerX, innerX, (rot.z + 1) * 0.5),
-      y: lerp(outerY, innerY, (rot.z + 1) * 0.5),
-      depth: rot.z
+      x: lerp(outerX, innerX, (rotZ + 1) * 0.5),
+      y: lerp(outerY, innerY, (rotZ + 1) * 0.5)
     };
   }
 
   const scale = Math.min(w, h) * 0.34;
-  const perspective = 1.0 / (1.8 - rot.z * 0.55);
+  const perspective = 1.0 / (1.8 - rotZ * 0.55);
   return {
-    x: w * 0.5 + rot.x * scale * perspective,
-    y: h * 0.52 + rot.y * scale * perspective,
-    depth: rot.z
+    x: w * 0.5 + rotX * scale * perspective,
+    y: h * 0.52 + rotY * scale * perspective
   };
+}
+
+function projectGuidePoint(x, y, z, w, h, mode, time) {
+  if (mode === 'front') {
+    return projectCachedPoint(x, y, z, w, h, mode);
+  }
+  const cam = getCameraAngles(time);
+  const rot = rotate3D(x, y, z, cam.pitch, cam.yaw);
+  return projectCachedPoint(rot.x, rot.y, rot.z, w, h, mode);
+}
+
+function getCanvasGradient(ctx, canvas, cacheKeyName, gradientKeyName) {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const key = `${w}x${h}`;
+
+  if (state.cache[cacheKeyName] !== key || !state.cache[gradientKeyName]) {
+    const grad = ctx.createRadialGradient(w * 0.5, h * 0.5, 8, w * 0.5, h * 0.5, Math.min(w, h) * 0.52);
+    grad.addColorStop(0, 'rgba(255,255,255,0.04)');
+    grad.addColorStop(1, 'rgba(255,255,255,0.00)');
+    state.cache[gradientKeyName] = grad;
+    state.cache[cacheKeyName] = key;
+  }
+
+  return state.cache[gradientKeyName];
 }
 
 function drawFrameGuides(ctx, canvas, mode, time) {
@@ -1154,15 +1367,15 @@ function drawFrameGuides(ctx, canvas, mode, time) {
     ctx.strokeRect(w * 0.5 - s * 0.5, h * 0.5 - s * 0.5, s, s);
   } else {
     const corners = [
-      [-0.5,-0.5,-0.5], [0.5,-0.5,-0.5], [0.5,0.5,-0.5], [-0.5,0.5,-0.5],
-      [-0.5,-0.5, 0.5], [0.5,-0.5, 0.5], [0.5,0.5, 0.5], [-0.5,0.5, 0.5]
+      [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5],
+      [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]
     ];
 
-    const pts = corners.map(([x,y,z]) => projectPoint(x, y, z, w, h, mode, time));
+    const pts = corners.map(([x, y, z]) => projectGuidePoint(x, y, z, w, h, mode, time));
     const edges = [
-      [0,1],[1,2],[2,3],[3,0],
-      [4,5],[5,6],[6,7],[7,4],
-      [0,4],[1,5],[2,6],[3,7]
+      [0, 1], [1, 2], [2, 3], [3, 0],
+      [4, 5], [5, 6], [6, 7], [7, 4],
+      [0, 4], [1, 5], [2, 6], [3, 7]
     ];
 
     ctx.beginPath();
@@ -1213,51 +1426,38 @@ function getFieldStyle(modeLabel, value, polar) {
   };
 }
 
-function drawField(ctx, canvas, field, modeLabel) {
+function drawField(ctx, canvas, field, modeLabel, cam) {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
+  const order = state.cache.order;
+  const polarArr = state.cache.polar;
+  const rx = state.cache.rx;
+  const ry = state.cache.ry;
+  const rz = state.cache.rz;
 
   ctx.clearRect(0, 0, w, h);
-
-  const grad = ctx.createRadialGradient(w * 0.5, h * 0.5, 8, w * 0.5, h * 0.5, Math.min(w, h) * 0.52);
-  grad.addColorStop(0, 'rgba(255,255,255,0.04)');
-  grad.addColorStop(1, 'rgba(255,255,255,0.00)');
-  ctx.fillStyle = grad;
+  ctx.fillStyle = getCanvasGradient(
+    ctx,
+    canvas,
+    modeLabel === 'expand' ? 'gradientExpandSizeKey' : 'gradientCollapseSizeKey',
+    modeLabel === 'expand' ? 'gradientExpand' : 'gradientCollapse'
+  );
   ctx.fillRect(0, 0, w, h);
 
   drawFrameGuides(ctx, canvas, state.projection, state.t);
 
-  const pts = [];
-  const n = state.n;
-
-  for (let z = 0; z < n; z++) {
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        const i = idx(x, y, z, n);
-        const v = field[i];
-        const nx = x / (n - 1) - 0.5;
-        const ny = y / (n - 1) - 0.5;
-        const nz = z / (n - 1) - 0.5;
-        const p = projectPoint(nx, ny, nz, w, h, state.projection, state.t);
-
-        pts.push({ x: p.x, y: p.y, z: p.depth, v, nx, ny, nz });
-      }
-    }
-  }
-
-  pts.sort((a, b) => a.z - b.z);
-
-  for (const p of pts) {
-    const polar = Math.max(Math.abs(p.nx), Math.abs(p.ny), Math.abs(p.nz));
-    const style = getFieldStyle(modeLabel, p.v, polar);
+  for (let j = 0; j < order.length; j++) {
+    const i = order[j];
+    const style = getFieldStyle(modeLabel, field[i], polarArr[i]);
+    const point = projectCachedPoint(rx[i], ry[i], rz[i], w, h, state.projection);
 
     let radius = style.radius;
     if (state.projection === 'tesseract') {
-      radius *= 0.92 + (p.z + 1) * 0.08;
+      radius *= 0.92 + (rz[i] + 1) * 0.08;
     }
 
     ctx.beginPath();
-    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = style.fill;
     ctx.fill();
   }
@@ -1271,7 +1471,6 @@ function drawField(ctx, canvas, field, modeLabel) {
   ctx.lineTo(w * 0.83, h * 0.5);
   ctx.stroke();
 
-  const cam = getCameraAngles(state.t);
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
   ctx.font = '11px Arial';
   ctx.fillText(`pitch ${cam.pitch.toFixed(2)}  yaw ${cam.yaw.toFixed(2)}`, 12, h - 12);
@@ -1358,33 +1557,6 @@ function drawWavePanel() {
   ctxWave.fillText('expand', legendX + 18, 22);
   ctxWave.fillText('collapse', legendX + 18, 40);
   ctxWave.fillText('residual', legendX + 18, 60);
-}
-
-function ensureCompositeCanvas() {
-  if (!state.compositeCanvas) {
-    state.compositeCanvas = document.createElement('canvas');
-    state.compositeCtx = state.compositeCanvas.getContext('2d');
-  }
-}
-
-function drawCompositeForExport() {
-  ensureCompositeCanvas();
-
-  const w = Math.max(canvasExpand.width, canvasCollapse.width);
-  const hTop = Math.max(canvasExpand.height, canvasCollapse.height);
-  const hWave = canvasWave.height;
-
-  state.compositeCanvas.width = w * 2;
-  state.compositeCanvas.height = hTop + hWave;
-
-  const c = state.compositeCtx;
-  c.clearRect(0, 0, state.compositeCanvas.width, state.compositeCanvas.height);
-  c.fillStyle = '#070707';
-  c.fillRect(0, 0, state.compositeCanvas.width, state.compositeCanvas.height);
-
-  c.drawImage(canvasExpand, 0, 0);
-  c.drawImage(canvasCollapse, w, 0);
-  c.drawImage(canvasWave, 0, hTop, w * 2, hWave);
 }
 
 function savePNG() {
@@ -1505,6 +1677,7 @@ function maybeCaptureGifFrame(nowMs) {
 }
 
 function resetSimulation() {
+  buildCoordinateCache();
   state.expandField = createField(state.n);
   state.collapseField = createField(state.n);
   state.tempExpand = createField(state.n);
@@ -1513,20 +1686,26 @@ function resetSimulation() {
   state.historyCollapse = [];
   state.historyResidual = [];
   state.t = 0;
+  state.cache.frameKey = '';
+  markRenderDirty();
   renderAll();
   setStatus('Reset');
 }
 
 function renderAll() {
-  drawField(ctxExpand, canvasExpand, state.expandField, 'expand');
-  drawField(ctxCollapse, canvasCollapse, state.collapseField, 'collapse');
+  if (!state.expandField || !state.collapseField) return;
+  const cam = getFrameProjectionData();
+  drawField(ctxExpand, canvasExpand, state.expandField, 'expand', cam);
+  drawField(ctxCollapse, canvasCollapse, state.collapseField, 'collapse', cam);
   drawWavePanel();
+  state.renderDirty = false;
 }
 
 function pointerStart(clientX, clientY) {
   state.camera.isDragging = true;
   state.camera.lastX = clientX;
   state.camera.lastY = clientY;
+  markRenderDirty();
   setStatus('Dragging camera');
 }
 
@@ -1542,6 +1721,8 @@ function pointerMove(clientX, clientY) {
   state.camera.dragPitch += dy * 0.005;
   state.camera.dragPitch = clamp(state.camera.dragPitch, -1.4, 1.4);
   state.camera.dragYaw = clamp(state.camera.dragYaw, -3.0, 3.0);
+  state.cache.frameKey = '';
+  markRenderDirty();
 }
 
 function pointerEnd() {
@@ -1572,6 +1753,13 @@ function attachPointerControls(canvas) {
 
 let last = performance.now();
 
+function scheduleSimulationReset() {
+  clearTimeout(state.resetDebounceId);
+  state.resetDebounceId = setTimeout(() => {
+    resetSimulation();
+  }, 90);
+}
+
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
@@ -1581,16 +1769,34 @@ function frame(now) {
     stepFields();
   }
 
-  renderAll();
+  const shouldRender =
+    state.renderDirty ||
+    state.running ||
+    state.camera.isDragging ||
+    state.gifRecorder.active ||
+    getRecordingWebmActive();
+
+  if (shouldRender) {
+    renderAll();
+  }
+
+  if (getRecordingWebmActive()) {
+    drawCompositeForExport();
+  }
+
   maybeCaptureGifFrame(now);
   requestAnimationFrame(frame);
 }
 
 function handleResize() {
-  resizeCanvas(canvasExpand);
-  resizeCanvas(canvasCollapse);
-  resizeCanvas(canvasWave);
-  renderAll();
+  if (state.resizeRafId) cancelAnimationFrame(state.resizeRafId);
+  state.resizeRafId = requestAnimationFrame(() => {
+    resizeCanvas(canvasExpand);
+    resizeCanvas(canvasCollapse);
+    resizeCanvas(canvasWave);
+    invalidateSizeCaches();
+    renderAll();
+  });
 }
 
 ui.presetSelect.addEventListener('change', (e) => applyPreset(e.target.value));
@@ -1602,16 +1808,9 @@ ui.savedPresetSelect.addEventListener('change', (e) => {
 });
 
 ui.savePresetBtn.addEventListener('click', () => saveCurrentPresetToStorage());
-
-ui.deletePresetBtn.addEventListener('click', () => {
-  deleteSavedPreset(ui.savedPresetSelect.value);
-});
-
+ui.deletePresetBtn.addEventListener('click', () => deleteSavedPreset(ui.savedPresetSelect.value));
 ui.exportPresetsBtn.addEventListener('click', () => exportSavedPresets());
-
-ui.importPresetsBtn.addEventListener('click', () => {
-  ui.importPresetsInput.click();
-});
+ui.importPresetsBtn.addEventListener('click', () => ui.importPresetsInput.click());
 
 ui.importPresetsInput.addEventListener('change', (e) => {
   const file = e.target.files && e.target.files[0];
@@ -1622,9 +1821,7 @@ ui.presetNameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') saveCurrentPresetToStorage();
 });
 
-ui.galleryFilterInput.addEventListener('input', () => {
-  renderPresetGallery();
-});
+ui.galleryFilterInput.addEventListener('input', () => renderPresetGallery());
 
 ui.clearGalleryFilterBtn.addEventListener('click', () => {
   ui.galleryFilterInput.value = '';
@@ -1634,57 +1831,68 @@ ui.clearGalleryFilterBtn.addEventListener('click', () => {
 });
 
 ui.gridSize.addEventListener('input', (e) => {
-  state.n = Number(e.target.value);
+  state.n = Math.round(safeNumber(e.target.value, state.n, 4, 24));
   markCustomPreset();
   updateReadouts();
-  resetSimulation();
+  buildCoordinateCache();
+  scheduleSimulationReset();
 });
 
 ui.speed.addEventListener('input', (e) => {
-  state.speed = Number(e.target.value);
+  state.speed = safeNumber(e.target.value, state.speed, 0.1, 4.0);
   markCustomPreset();
   updateReadouts();
+  markRenderDirty();
 });
 
 ui.memory.addEventListener('input', (e) => {
-  state.memory = Number(e.target.value);
+  state.memory = safeNumber(e.target.value, state.memory, 0.0, 0.99);
   markCustomPreset();
   updateReadouts();
+  markRenderDirty();
 });
 
 ui.coupling.addEventListener('input', (e) => {
-  state.coupling = Number(e.target.value);
+  state.coupling = safeNumber(e.target.value, state.coupling, 0.0, 1.0);
   markCustomPreset();
   updateReadouts();
+  markRenderDirty();
 });
 
 ui.rotation.addEventListener('input', (e) => {
-  state.rotation = Number(e.target.value);
+  state.rotation = safeNumber(e.target.value, state.rotation, 0.0, 3.0);
   markCustomPreset();
   updateReadouts();
+  state.cache.frameKey = '';
+  markRenderDirty();
 });
 
 ui.contrast.addEventListener('input', (e) => {
-  state.contrast = Number(e.target.value);
+  state.contrast = safeNumber(e.target.value, state.contrast, 0.2, 3.0);
   markCustomPreset();
   updateReadouts();
+  markRenderDirty();
 });
 
 ui.expandWeight.addEventListener('input', (e) => {
-  state.expandWeight = Number(e.target.value);
+  state.expandWeight = safeNumber(e.target.value, state.expandWeight, 0.1, 3.0);
   markCustomPreset();
   updateReadouts();
+  markRenderDirty();
 });
 
 ui.collapseWeight.addEventListener('input', (e) => {
-  state.collapseWeight = Number(e.target.value);
+  state.collapseWeight = safeNumber(e.target.value, state.collapseWeight, 0.1, 3.0);
   markCustomPreset();
   updateReadouts();
+  markRenderDirty();
 });
 
 ui.projection.addEventListener('change', (e) => {
   state.projection = e.target.value;
   markCustomPreset();
+  state.cache.frameKey = '';
+  markRenderDirty();
   renderAll();
   setStatus(`Projection: ${state.projection}`);
 });
@@ -1692,6 +1900,7 @@ ui.projection.addEventListener('change', (e) => {
 ui.toggleRun.addEventListener('click', () => {
   state.running = !state.running;
   updateReadouts();
+  markRenderDirty();
   setStatus(state.running ? 'Running' : 'Paused');
 });
 
@@ -1699,7 +1908,7 @@ ui.resetBtn.addEventListener('click', () => resetSimulation());
 ui.snapshotBtn.addEventListener('click', () => savePNG());
 
 ui.recordBtn.addEventListener('click', () => {
-  if (state.recorder && state.recorder.state === 'recording') stopRecording();
+  if (getRecordingWebmActive()) stopRecording();
   else startRecording();
   updateReadouts();
 });
@@ -1717,6 +1926,7 @@ window.addEventListener('resize', handleResize);
 attachPointerControls(canvasExpand);
 attachPointerControls(canvasCollapse);
 
+buildCoordinateCache();
 loadPresetsFromStorage();
 refreshSavedPresetDropdown();
 updateReadouts();
