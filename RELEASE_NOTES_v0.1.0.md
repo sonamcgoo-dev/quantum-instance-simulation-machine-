@@ -1,3 +1,4 @@
+[RELEASE_NOTES_v0.1.0.md](https://github.com/user-attachments/files/26047088/RELEASE_NOTES_v0.1.0.md)
 ## v0.1.0 – Initial public visualization build
 
 First public release of the Wave Cell Visualizer.
@@ -23,8 +24,10 @@ First public release of the Wave Cell Visualizer.
 - runs as a static browser app with no build step
 - designed for GitHub Pages deployment
 - includes upstream attribution and bundled license files
+- framed as a speculative interactive visualization, not a validated scientific model
 
 ### Known limitations
 - conceptual visualization, not a validated physical model
 - GIF export can be slower on weaker hardware
 - very large saved preset libraries may increase localStorage usage
+- source cleanup and modularization are still in progress
